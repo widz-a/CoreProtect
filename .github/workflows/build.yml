@@ -26,3 +26,13 @@ jobs:
           restore-keys: ${{ runner.os }}-m2
       - name: Build
         run: mvn -B verify
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        if: github.ref_type == 'tag'
+        with:
+          files: ${{ github.workspace }}/target/*
+          generate_release_notes: true
+          name: ${{ format('Commit {0}', github.sha) }}
+          prerelease: false
+          fail_on_unmatched_files: true
+          draft: false
