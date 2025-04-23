@@ -36,3 +36,4 @@ jobs:
           prerelease: false
           fail_on_unmatched_files: true
           draft: false
+          tag_name: github.run_id
