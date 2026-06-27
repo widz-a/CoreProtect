@@ -8,10 +8,12 @@ import java.sql.Statement;
 import java.util.ArrayList;
 import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
 
 import org.bukkit.Bukkit;
 import org.bukkit.World;
@@ -37,17 +39,24 @@ import net.coreprotect.utility.Chat;
 import net.coreprotect.utility.Color;
 import net.coreprotect.utility.SystemUtils;
 import net.coreprotect.utility.VersionUtils;
+import net.coreprotect.utility.ErrorReporter;
 import oshi.hardware.CentralProcessor;
 
 public class ConfigHandler extends Queue {
+
+    public enum CacheType {
+        MATERIALS, BLOCKDATA, ART, ENTITIES, WORLDS
+    }
+
     public static int SERVER_VERSION = 0;
     public static final int EDITION_VERSION = 2;
     public static final String EDITION_BRANCH = VersionUtils.getBranch();
     public static final String EDITION_NAME = VersionUtils.getPluginName();
     public static final String COMMUNITY_EDITION = "Community Edition";
     public static final String JAVA_VERSION = "11.0";
-    public static final String MINECRAFT_VERSION = "1.16";
-    public static final String LATEST_VERSION = "1.21.8";
+    public static final String MINECRAFT_VERSION = "1.16.5";
+    public static final String PATCH_VERSION = "24.0";
+    public static final String LATEST_VERSION = "26.1.2";
     public static String path = "plugins/CoreProtect/";
     public static String sqlite = "database.db";
     public static String host = "127.0.0.1";
@@ -58,6 +67,10 @@ public class ConfigHandler extends Queue {
     public static String prefix = "co_";
     public static String prefixConfig = "co_";
     public static int maximumPoolSize = 10;
+
+    public static final String BLACKLIST_COMMENT_SEPARATOR = ";";
+    public static final String BLACKLIST_FILTER_SEPARATOR = "@";
+    public static final String BLACKLIST_FILENAME = "blacklist.txt";
 
     public static HikariDataSource hikariDataSource = null;
     public static final CentralProcessor processorInfo = SystemUtils.getProcessorInfo();
@@ -76,6 +89,7 @@ public class ConfigHandler extends Queue {
     public static volatile int blockdataId = 0;
     public static volatile int entityId = 0;
     public static volatile int artId = 0;
+    public static final AtomicLong autoPurgeRowsPurged = new AtomicLong(0);
 
     private static <K, V> Map<K, V> syncMap() {
         return Collections.synchronizedMap(new HashMap<>());
@@ -94,6 +108,7 @@ public class ConfigHandler extends Queue {
     public static Map<String, int[]> rollbackHash = syncMap();
     public static Map<String, Boolean> inspecting = syncMap();
     public static Map<String, Boolean> blacklist = syncMap();
+    public static Map<String, HashSet<String>> FilteredBlacklist = syncMap();
     public static Map<String, Integer> loggingChest = syncMap();
     public static Map<String, Integer> loggingItem = syncMap();
     public static ConcurrentHashMap<String, List<Object>> transactingChest = new ConcurrentHashMap<>();
@@ -146,27 +161,56 @@ public class ConfigHandler extends Queue {
         }
     }
 
+    public static boolean isBlacklisted(String user) {
+        return ConfigHandler.blacklist.containsKey(user.toLowerCase(Locale.ROOT));
+    }
+
+    public static boolean isBlacklisted(String user, String object) {
+        if (ConfigHandler.blacklist.containsKey(object) || ConfigHandler.blacklist.containsKey(user.toLowerCase(Locale.ROOT))) {
+            return true;
+        }
+        return isFilterBlacklisted(user, object);
+    }
+
+    public static boolean isFilterBlacklisted(String user, String object) {
+        HashSet<String> blUserSet = FilteredBlacklist.get(object);
+        if (blUserSet == null) {
+            return false;
+        }
+        return blUserSet.contains(user.toLowerCase(Locale.ROOT));
+    }
+
     private static void loadBlacklist() {
         try {
             ConfigHandler.blacklist.clear();
-            String blacklist = ConfigHandler.path + "blacklist.txt";
-            boolean exists = (new File(blacklist)).exists();
-            if (exists) {
-                RandomAccessFile blfile = new RandomAccessFile(blacklist, "rw");
-                long blc = blfile.length();
-                if (blc > 0) {
-                    while (blfile.getFilePointer() < blfile.length()) {
-                        String blacklistUser = blfile.readLine().replaceAll(" ", "").toLowerCase(Locale.ROOT);
-                        if (blacklistUser.length() > 0) {
-                            ConfigHandler.blacklist.put(blacklistUser, true);
-                        }
+            ConfigHandler.FilteredBlacklist.clear();
+
+            File file = new File(ConfigHandler.path, BLACKLIST_FILENAME);
+            if (!file.exists()) {
+                return;
+            }
+            try (RandomAccessFile blfile = new RandomAccessFile(file, "r")) {
+                if (blfile.length() == 0) {
+                    return;
+                }
+                String blLine;
+                while ((blLine = blfile.readLine()) != null) {
+                    blLine = blLine.replace(" ", "").toLowerCase(Locale.ROOT).split(BLACKLIST_COMMENT_SEPARATOR)[0];
+                    if (blLine.isEmpty()) {
+                        continue;
+                    }
+                    String[] blSplit = blLine.split(BLACKLIST_FILTER_SEPARATOR);
+                    if (blSplit.length == 1) {
+                        ConfigHandler.blacklist.put(blLine, true);
+                    }
+                    else {
+                        ConfigHandler.FilteredBlacklist.computeIfAbsent(blSplit[0], k -> new HashSet<>()).add(blSplit[1]);
                     }
                 }
-                blfile.close();
             }
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
     }
 
@@ -193,7 +237,7 @@ public class ConfigHandler extends Queue {
             ConfigHandler.loadBlacklist(); // Load the blacklist file if it exists.
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
     }
 
@@ -228,7 +272,7 @@ public class ConfigHandler extends Queue {
                 Class.forName("org.sqlite.JDBC");
             }
             catch (Exception e) {
-                e.printStackTrace();
+                ErrorReporter.report(e);
             }
         }
         else {
@@ -268,7 +312,7 @@ public class ConfigHandler extends Queue {
         Database.createDatabaseTables(ConfigHandler.prefix, false, null, Config.getGlobal().MYSQL, false);
     }
 
-    public static void loadTypes(Statement statement) {
+    public static void loadMaterials(Statement statement) {
         try {
             String query = "SELECT id,material FROM " + ConfigHandler.prefix + "material_map";
             ResultSet rs = statement.executeQuery(query);
@@ -286,9 +330,16 @@ public class ConfigHandler extends Queue {
                 }
             }
             rs.close();
+        }
+        catch (Exception e) {
+            ErrorReporter.report(e);
+        }
+    }
 
-            query = "SELECT id,data FROM " + ConfigHandler.prefix + "blockdata_map";
-            rs = statement.executeQuery(query);
+    public static void loadBlockdata(Statement statement) {
+        try {
+            String query = "SELECT id,data FROM " + ConfigHandler.prefix + "blockdata_map";
+            ResultSet rs = statement.executeQuery(query);
             ConfigHandler.blockdata.clear();
             ConfigHandler.blockdataReversed.clear();
             blockdataId = 0;
@@ -303,9 +354,16 @@ public class ConfigHandler extends Queue {
                 }
             }
             rs.close();
+        }
+        catch (Exception e) {
+            ErrorReporter.report(e);
+        }
+    }
 
-            query = "SELECT id,art FROM " + ConfigHandler.prefix + "art_map";
-            rs = statement.executeQuery(query);
+    public static void loadArt(Statement statement) {
+        try {
+            String query = "SELECT id,art FROM " + ConfigHandler.prefix + "art_map";
+            ResultSet rs = statement.executeQuery(query);
             ConfigHandler.art.clear();
             ConfigHandler.artReversed.clear();
             artId = 0;
@@ -320,9 +378,16 @@ public class ConfigHandler extends Queue {
                 }
             }
             rs.close();
+        }
+        catch (Exception e) {
+            ErrorReporter.report(e);
+        }
+    }
 
-            query = "SELECT id,entity FROM " + ConfigHandler.prefix + "entity_map";
-            rs = statement.executeQuery(query);
+    public static void loadEntities(Statement statement) {
+        try {
+            String query = "SELECT id,entity FROM " + ConfigHandler.prefix + "entity_map";
+            ResultSet rs = statement.executeQuery(query);
             ConfigHandler.entities.clear();
             ConfigHandler.entitiesReversed.clear();
             entityId = 0;
@@ -339,8 +404,69 @@ public class ConfigHandler extends Queue {
             rs.close();
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
+    }
+
+    public static void loadTypes(Statement statement) {
+        loadMaterials(statement);
+        loadBlockdata(statement);
+        loadArt(statement);
+        loadEntities(statement);
+    }
+
+    /**
+     * Unified method to reload cache from database when DATABASE_LOCK is false (multi-server setup)
+     * 
+     * @param type
+     *            The type of cache to reload
+     * @param name
+     *            The name to look up after reload
+     * @return The ID if found after reload, or -1 if not found
+     */
+    public static int reloadAndGetId(CacheType type, String name) {
+        // Only reload if DATABASE_LOCK is false (multi-server setup)
+        if (Config.getGlobal().DATABASE_LOCK) {
+            return -1;
+        }
+
+        try (Connection connection = Database.getConnection(true)) {
+            if (connection != null) {
+                Statement statement = connection.createStatement();
+
+                // Reload appropriate cache based on type
+                switch (type) {
+                    case MATERIALS:
+                        loadMaterials(statement);
+                        statement.close();
+                        return materials.getOrDefault(name, -1);
+                    case BLOCKDATA:
+                        loadBlockdata(statement);
+                        statement.close();
+                        return blockdata.getOrDefault(name, -1);
+                    case ART:
+                        loadArt(statement);
+                        statement.close();
+                        return art.getOrDefault(name, -1);
+                    case ENTITIES:
+                        loadEntities(statement);
+                        statement.close();
+                        return entities.getOrDefault(name, -1);
+                    case WORLDS:
+                        loadWorlds(statement);
+                        statement.close();
+                        return worlds.getOrDefault(name, -1);
+                    default:
+                        statement.close();
+                        return -1;
+                }
+            }
+        }
+        catch (Exception e) {
+            ErrorReporter.report(e);
+        }
+
+        return -1;
     }
 
     public static void loadWorlds(Statement statement) {
@@ -375,7 +501,7 @@ public class ConfigHandler extends Queue {
             }
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
     }
 
@@ -414,7 +540,7 @@ public class ConfigHandler extends Queue {
             }
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
 
         return true;
@@ -435,7 +561,7 @@ public class ConfigHandler extends Queue {
             }
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
 
         try (Connection connection = Database.getConnection(true, 0)) {
@@ -470,7 +596,7 @@ public class ConfigHandler extends Queue {
             return validVersion && databaseLock;
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
 
         return false;
@@ -482,7 +608,7 @@ public class ConfigHandler extends Queue {
             ListenerHandler.unregisterNetworking(); // Unregister channels for networking API
         }
         catch (Exception e) {
-            e.printStackTrace();
+            ErrorReporter.report(e);
         }
     }
 
