@@ -28,7 +28,12 @@ public final class EntityChangeBlockListener extends Queue implements Listener {
     @EventHandler(priority = EventPriority.MONITOR)
     protected void onEntityChangeBlock(EntityChangeBlockEvent event) {
         World world = event.getBlock().getWorld();
-        if (event.isCancelled() || !Config.getConfig(world).ENTITY_CHANGE) {
+        if (event.isCancelled()) {
+            return;
+        }
+
+        Config config = Config.getConfig(world);
+        if (!config.ENTITY_CHANGE) {
             return;
         }
 
@@ -37,7 +42,15 @@ public final class EntityChangeBlockListener extends Queue implements Listener {
         Material newtype = event.getTo();
         Material type = event.getBlock().getType();
 
+        if (type == newtype && (type == Material.REDSTONE_ORE || type.name().equals("DEEPSLATE_REDSTONE_ORE") || type.name().equals("BIG_DRIPLEAF"))) {
+            return;
+        }
+
         if (entity instanceof FallingBlock) {
+            if (!config.BLOCK_MOVEMENT) {
+                CacheHandler.fallingBlockSpawnCache.remove(entity.getUniqueId().toString());
+                return;
+            }
             handleFallingBlock(event, (FallingBlock) entity, block, newtype, type, world);
             return;
         }
@@ -94,6 +107,9 @@ public final class EntityChangeBlockListener extends Queue implements Listener {
             String coordKey = block.getX() + "." + block.getY() + "." + block.getZ() + "." + worldId;
             String user = lookupCachedUser(coordKey, type);
             if (user == null) {
+                if (isTrackedFallingAttachment(type)) {
+                    return;
+                }
                 user = "#gravity";
             }
 
@@ -127,6 +143,11 @@ public final class EntityChangeBlockListener extends Queue implements Listener {
             return null;
         }
         return (String) data[1];
+    }
+
+    private static boolean isTrackedFallingAttachment(Material type) {
+        String name = type.name();
+        return name.equals("POINTED_DRIPSTONE") || name.equals("SULFUR_SPIKE");
     }
 
 }

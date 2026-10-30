@@ -9,6 +9,9 @@ import java.util.UUID;
 
 import org.bukkit.Location;
 import org.bukkit.Server;
+import org.bukkit.World;
+import org.bukkit.block.Block;
+import org.bukkit.block.BlockState;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.Villager;
 import org.bukkit.inventory.Inventory;
@@ -19,6 +22,8 @@ import net.coreprotect.model.entity.VillagerReputationData;
 
 public class PaperHandler extends PaperAdapter {
     private volatile boolean supportsSnapshotHolderLookup = true;
+    private volatile boolean supportsSnapshotStateLookup = true;
+    private volatile boolean supportsAverageTickTime = true;
 
     @Override
     public boolean isStopping(Server server) {
@@ -26,8 +31,29 @@ public class PaperHandler extends PaperAdapter {
     }
 
     @Override
+    public double getAverageTickTime(Server server) {
+        if (supportsAverageTickTime) {
+            try {
+                return server.getAverageTickTime();
+            }
+            catch (LinkageError | UnsupportedOperationException ignored) {
+                supportsAverageTickTime = false;
+            }
+        }
+
+        return -1.0D;
+    }
+
+    @Override
     public void teleportAsync(Entity entity, Location location) {
         entity.teleportAsync(location);
+    }
+
+    @Override
+    public void prefetchChunk(World world, int chunkX, int chunkZ) {
+        if (!world.isChunkLoaded(chunkX, chunkZ)) {
+            world.getChunkAtAsync(chunkX, chunkZ);
+        }
     }
 
     @Override
@@ -42,6 +68,20 @@ public class PaperHandler extends PaperAdapter {
         }
 
         return holder.getHolder();
+    }
+
+    @Override
+    public BlockState getBlockState(Block block, boolean useSnapshot) {
+        if (supportsSnapshotStateLookup) {
+            try {
+                return block.getState(useSnapshot);
+            }
+            catch (LinkageError ignored) {
+                supportsSnapshotStateLookup = false;
+            }
+        }
+
+        return block.getState();
     }
 
     @Override
